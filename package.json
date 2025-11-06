@@ -1,0 +1,26 @@
+{
+  "name": "real-time-communication-with-socket-io-boscoh722",
+  "version": "1.0.0",
+  "description": "This assignment focuses on building a real-time chat application using Socket.io, implementing bidirectional communication between clients and server.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PLP-MERN-Stack-Development/real-time-communication-with-socket-io-Boscoh722.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/PLP-MERN-Stack-Development/real-time-communication-with-socket-io-Boscoh722/issues"
+  },
+  "homepage": "https://github.com/PLP-MERN-Stack-Development/real-time-communication-with-socket-io-Boscoh722#readme",
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
+  }
+}

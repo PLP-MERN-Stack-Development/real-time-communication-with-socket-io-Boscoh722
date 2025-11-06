@@ -1,0 +1,64 @@
+.App {
+  text-align: center;
+}
+
+.App-logo {
+  height: 40vmin;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .App-logo {
+    animation: App-logo-spin infinite 20s linear;
+  }
+}
+
+.App-header {
+  background-color: #282c34;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(10px + 2vmin);
+  color: white;
+}
+
+.App-link {
+  color: #61dafb;
+}
+
+@keyframes App-logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Chat UI tweaks */
+.messages .message.me {
+  text-align: right;
+}
+.messages .message.other {
+  text-align: left;
+}
+.messages .message.system {
+  text-align: center;
+}
+.messages .message strong {
+  font-weight: 600;
+}
+
+.typing-indicator {
+  font-size: 13px;
+  color: #666;
+  margin-left: 6px;
+}
+
+.online-users {
+  font-size: 13px;
+  color: #333;
+  margin-bottom: 6px;
+}

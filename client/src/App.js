@@ -1,195 +1,203 @@
-import React, { useState, useEffect, useRef } from 'react';
-import io from 'socket.io-client';
+// src/App.js
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
+import io from "socket.io-client";
+import "./App.css";
 
-// Connect to backend server (match server/server.js port)
-const socket = io('http://localhost:5000');
+const API_BASE = "http://localhost:5000";
+const PAGE_SIZE = 20;
 
 function App() {
-  const [username, setUsername] = useState(''); // state for username
-  const [isLoggedIn, setIsLoggedIn] = useState(false); // login state
+  /* ==================== AUTH STATE ==================== */
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
 
-  // Chat state
-  const [messages, setMessages] = useState({}); // room -> messages
-  const [messageInput, setMessageInput] = useState('');
-  const messagesEndRef = useRef(null);
-  const [typingUsers, setTypingUsers] = useState([]);
-  const typingTimeoutRef = useRef(null);
-  const [onlineUsers, setOnlineUsers] = useState([]);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [privateMessages, setPrivateMessages] = useState({});  // room -> messages
-  
-  // Room state
-  const [availableRooms, setAvailableRooms] = useState(['general']);
-  const [currentRoom, setCurrentRoom] = useState('general');
-  const [usersInRoom, setUsersInRoom] = useState([]);
-  
-  // Reaction state
-  const [showReactions, setShowReactions] = useState(null); // messageId that shows reaction picker
+  /* ==================== CHAT STATE ==================== */
+  const [socket, setSocket] = useState(null);
+  const [rooms, setRooms] = useState([]);
+  const [currentRoom, setCurrentRoom] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
 
+  const observer = useRef();
+
+  /* ==================== SOCKET SETUP ==================== */
   useEffect(() => {
-    socket.on('connect', () => {
-      console.log('Connected to server');
+    const newSocket = io(`${API_BASE}/chat`, {
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+      transports: ["websocket", "polling"],
     });
 
-    socket.on('disconnect', () => {
-      console.log('Disconnected from server');
-    });
+    newSocket.on("connect", () => console.log("Socket connected"));
+    newSocket.on("disconnect", () => console.log("Socket disconnected"));
 
-    // incoming chat message
-    socket.on('message', (msg) => {
-      setMessages(prev => ({
-        ...prev,
-        [msg.room]: [...(prev[msg.room] || []), msg]
-      }));
-    });
-
-    // system messages when a user joins
-    socket.on('userJoined', (msg) => {
-      setMessages(prev => ({
-        ...prev,
-        general: [...(prev.general || []), { text: msg, system: true }]
-      }));
-    });
-
-    // Room updates
-    socket.on('roomList', ({ rooms, current, usersInRoom }) => {
-      setAvailableRooms(rooms);
-      setCurrentRoom(current);
-      setUsersInRoom(usersInRoom);
-    });
-
-    socket.on('roomUpdate', ({ room, users }) => {
-      if (room === currentRoom) {
-        setUsersInRoom(users);
-      }
-    });
-
-    // Handle incoming reactions
-    socket.on('messageReaction', ({ messageId, reaction, username, room }) => {
-      setMessages(prev => {
-        const roomMessages = prev[room] || [];
-        const updatedMessages = roomMessages.map(msg => {
-          if (msg.id === messageId) {
-            const reactions = { ...msg.reactions } || {};
-            if (!reactions[reaction]) reactions[reaction] = [];
-            if (!reactions[reaction].includes(username)) {
-              reactions[reaction] = [...reactions[reaction], username];
-            }
-            return { ...msg, reactions };
-          }
-          return msg;
-        });
-        return { ...prev, [room]: updatedMessages };
-      });
-    });
-
-    // other users typing
-    socket.on('typing', (data) => {
-      // data: { username, typing: true/false }
-      setTypingUsers((prev) => {
-        const exists = prev.includes(data.username);
-        if (data.typing) {
-          if (!exists) return [...prev, data.username];
-          return prev;
-        } else {
-          return prev.filter((u) => u !== data.username);
-        }
-      });
-    });
-
-    // current online users
-    socket.on('userList', (list) => {
-      // list: array of usernames
-      setOnlineUsers(list);
-    });
-
-    // Handle incoming private messages
-    socket.on('privateMessage', ({ room, from, text, timestamp }) => {
-      setPrivateMessages(prev => ({
-        ...prev,
-        [room]: [...(prev[room] || []), { from, text, timestamp }]
-      }));
-    });
-
-    return () => {
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('message');
-      socket.off('userJoined');
-      socket.off('typing');
-      socket.off('userList');
-      socket.off('privateMessage');
-      socket.off('roomList');
-      socket.off('roomUpdate');
-      socket.off('messageReaction');
-    };
+    setSocket(newSocket);
+    return () => newSocket.close();
   }, []);
 
-  // Handle form submission
-  const handleSubmit = (e) => {
+  /* ==================== LOGIN ==================== */
+  const fetchRooms = async (authToken) => {
+    const res = await fetch(`${API_BASE}/rooms`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    const data = await res.json();
+    setRooms(data);
+    if (data.length) setCurrentRoom(data[0].id);
+  };
+
+  const handleLogin = async (e) => {
     e.preventDefault();
-    if (username.trim()) {
-      socket.emit('join', username);
+    setError("");
+    if (!username.trim()) return setError("Username required");
+
+    try {
+      const res = await fetch(`${API_BASE}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) throw new Error("Login failed");
+
+      const { token: t, username: u } = await res.json();
+      setToken(t);
       setIsLoggedIn(true);
+      await fetchRooms(t);
+      socket?.emit("join", u);
+    } catch (err) {
+      setError(err.message);
     }
   };
 
-  // Send chat message
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    const text = messageInput.trim();
-    if (!text) return;
-
-    if (selectedUser) {
-      // Private message
-      const room = [username, selectedUser].sort().join('-');
-      socket.emit('privateMessage', { to: selectedUser, text, room });
-    } else {
-      // Public room message
-      const msg = { username, text, room: currentRoom };
-      socket.emit('message', msg);
-    }
-
-    setMessageInput('');
-    // notify stopped typing after sending
-    socket.emit('typing', { username, typing: false });
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = null;
-    }
-  };
-
-  // auto-scroll to bottom when messages update
+  /* ==================== REAL-TIME MESSAGES ==================== */
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (!socket) return;
+    const handler = (msg) => {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
+    };
+    socket.on("message", handler);
+    return () => socket.off("message", handler);
+  }, [socket]);
+
+  const sendMessage = (e) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !socket) return;
+
+    socket.emit("message", { room: currentRoom, text: newMessage });
+    setNewMessage("");
+  };
+
+  /* ==================== ROOM SWITCHING ==================== */
+  const switchRoom = (newRoom) => {
+    if (newRoom === currentRoom) return;
+
+    socket?.emit("joinRoom", { newRoom, oldRoom: currentRoom });
+    setCurrentRoom(newRoom);
+    setMessages([]);
+    setPage(1);
+    setHasMore(true);
+  };
+
+  /* ==================== LOAD MESSAGE HISTORY ==================== */
+  const fetchMessages = useCallback(
+    async (roomId, pageNum, append = true) => {
+      if (!token) return;
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `${API_BASE}/rooms/${roomId}/messages?page=${pageNum}&limit=${PAGE_SIZE}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const { messages: data, hasMore: more } = await res.json();
+
+        setHasMore(more);
+        setMessages((prev) =>
+          append ? [...data.reverse(), ...prev] : data.reverse()
+        );
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [token]
+  );
+
+  useEffect(() => {
+    if (currentRoom && token) {
+      setPage(1);
+      setHasMore(true);
+      setMessages([]);
+      fetchMessages(currentRoom, 1, false);
     }
+  }, [currentRoom, token, fetchMessages]);
+
+  useEffect(() => {
+    if (page > 1) fetchMessages(currentRoom, page, true);
+  }, [page, currentRoom, fetchMessages]);
+
+  /* ==================== INFINITE SCROLL WITH useMemo ==================== */
+  const observerCallback = useMemo(() => {
+    return (entries) => {
+      if (entries[0].isIntersecting && hasMore && !loading) {
+        setPage((p) => p + 1);
+      }
+    };
+  }, [hasMore, loading]);
+
+  const lastMessageRef = useCallback(
+    (node) => {
+      if (!node) return;
+      if (observer.current) observer.current.disconnect();
+
+      observer.current = new IntersectionObserver(observerCallback);
+      observer.current.observe(node);
+    },
+    [observerCallback]
+  );
+
+  // Memoize reversed messages (oldest first)
+  const displayedMessages = useMemo(() => {
+    return [...messages].reverse();
   }, [messages]);
 
+  /* ==================== JSX RENDER ==================== */
   if (!isLoggedIn) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '100px' }}>
-        <h2>Enter Your Username</h2>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', width: '250px', gap: '10px' }}>
+      <div className="login" style={{ padding: "2rem", maxWidth: "400px", margin: "0 auto" }}>
+        {error && <div className="error" style={{ color: "red", marginBottom: "1rem" }}>{error}</div>}
+        <form onSubmit={handleLogin}>
           <input
-            type="text"
+            placeholder="Username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="Enter username"
-            required
-            style={{ padding: '8px', fontSize: '16px' }}
+            style={{ display: "block", width: "100%", padding: "0.5rem", marginBottom: "0.5rem" }}
           />
-          <button
-            type="submit"
-            style={{
-              padding: '8px',
-              backgroundColor: '#007bff',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer'
-            }}
-          >
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{ display: "block", width: "100%", padding: "0.5rem", marginBottom: "1rem" }}
+          />
+          <button type="submit" style={{ width: "100%", padding: "0.75rem", background: "#007bff", color: "white", border: "none" }}>
             Join Chat
           </button>
         </form>
@@ -198,269 +206,126 @@ function App() {
   }
 
   return (
-    <div className="App" style={{ textAlign: 'center', marginTop: '40px' }}>
-      <h1>Welcome, {username}!</h1>
-      <p>You are now connected to the chat server 🎉</p>
-
-      <div style={{ display: 'flex', gap: 20, marginBottom: 16, padding: '0 20px' }}>
-        {/* Room List */}
-        <div style={{ flex: '0 0 200px', textAlign: 'left' }}>
-          <h3 style={{ margin: '0 0 8px 0' }}>Rooms</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {availableRooms.map(room => (
-              <button
-                key={room}
-                onClick={() => {
-                  if (room !== currentRoom) {
-                    socket.emit('joinRoom', { newRoom: room, oldRoom: currentRoom });
-                    setCurrentRoom(room);
-                    setSelectedUser(null);
-                  }
-                }}
-                style={{
-                  padding: '8px 12px',
-                  background: room === currentRoom ? '#007bff' : '#f8f9fa',
-                  color: room === currentRoom ? 'white' : '#333',
-                  border: '1px solid #dee2e6',
-                  borderRadius: 4,
-                  cursor: 'pointer',
-                  textAlign: 'left'
-                }}
-              >
-                # {room}
-                <span style={{ float: 'right', fontSize: 12 }}>
-                  {room === currentRoom && usersInRoom.length}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Users List */}
-        <div style={{ flex: '0 0 200px', textAlign: 'left' }}>
-          <h3 style={{ margin: '0 0 8px 0' }}>Online</h3>
-          <div>
-            {onlineUsers.map((u) => (
-              <div
-                key={u}
-                onClick={() => u !== username && setSelectedUser(u === selectedUser ? null : u)}
-                style={{
-                  padding: '4px 8px',
-                  cursor: u === username ? 'default' : 'pointer',
-                  color: u === selectedUser ? '#007bff' : 'inherit',
-                  fontWeight: u === username ? 700 : u === selectedUser ? 600 : 400,
-                  background: usersInRoom.includes(u) ? '#f8f9fa' : 'transparent',
-                  borderRadius: 4
-                }}
-              >
-                {u} {u === username && '(you)'}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {selectedUser && (
-        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+    <div className="App" style={{ display: "flex", height: "100vh", fontFamily: "Arial, sans-serif" }}>
+      {/* ==================== ROOM SIDEBAR ==================== */}
+      <div
+        style={{
+          flex: "0 0 200px",
+          padding: "1rem",
+          borderRight: "1px solid #ddd",
+          overflowY: "auto",
+          backgroundColor: "#f8f9fa",
+        }}
+      >
+        <h3 style={{ margin: "0 0 1rem 0" }}>Rooms</h3>
+        {rooms.map((room) => (
           <button
-            onClick={() => setSelectedUser(null)}
+            key={room.id}
+            onClick={() => switchRoom(room.id)}
             style={{
-              border: 'none',
-              background: 'none',
-              color: '#666',
-              cursor: 'pointer',
-              fontSize: 14
+              display: "block",
+              width: "100%",
+              marginBottom: "4px",
+              padding: "8px",
+              background: room.id === currentRoom ? "#007bff" : "#fff",
+              color: room.id === currentRoom ? "white" : "#333",
+              border: "1px solid #dee2e6",
+              borderRadius: "4px",
+              textAlign: "left",
+              cursor: "pointer",
             }}
           >
-            ← Return to {currentRoom}
+            # {room.name}
           </button>
-        </div>
-      )}
+        ))}
+      </div>
 
-      <div className="chat-container" style={{ margin: '20px auto', maxWidth: 600 }}>
-        {selectedUser && (
-          <div style={{ marginBottom: 12, color: '#666', fontSize: 14 }}>
-            Private chat with <strong>{selectedUser}</strong>
-          </div>
-        )}
-        <div className="messages" style={{ border: '1px solid #ddd', padding: 12, height: 300, overflowY: 'auto', borderRadius: 6, background: '#fafafa' }}>
-          {selectedUser ? (
-            // Private messages
-            <>
-              {(!privateMessages[[username, selectedUser].sort().join('-')] || 
-                privateMessages[[username, selectedUser].sort().join('-')].length === 0) && (
-                <div style={{ color: '#666' }}>No private messages yet — say hi to {selectedUser} 👋</div>
-              )}
-              {privateMessages[[username, selectedUser].sort().join('-')]?.map((m, idx) => (
-                <div key={idx} className={`message ${m.from === username ? 'me' : 'other'}`} style={{ margin: '8px 0' }}>
-                  <div>
-                    <strong style={{ marginRight: 8 }}>{m.from}</strong>
-                    <span style={{ color: '#333' }}>{m.text}</span>
-                    {m.timestamp && <div style={{ fontSize: 11, color: '#999' }}>{new Date(m.timestamp).toLocaleTimeString()}</div>}
-                  </div>
-                </div>
-              ))}
-            </>
-          ) : (
-            // Public messages
-            <>
-              {(!messages[currentRoom] || messages[currentRoom].length === 0) && (
-                <div style={{ color: '#666' }}>No messages yet in #{currentRoom} — say hello 👋</div>
-              )}
-              {messages[currentRoom]?.map((m, idx) => (
-                <div key={idx} className={`message ${m.system ? 'system' : m.username === username ? 'me' : 'other'}`} style={{ margin: '8px 0' }}>
-                  {m.system ? (
-                    <div style={{ color: '#999', fontStyle: 'italic' }}>{m.text}</div>
-                  ) : (
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: m.username === username ? 'flex-end' : 'flex-start', alignItems: 'center', gap: 8 }}>
-                        <strong>{m.username}</strong>
-                        <div style={{ 
-                          color: '#333',
-                          background: m.username === username ? '#007bff22' : '#f8f9fa',
-                          padding: '8px 12px',
-                          borderRadius: 12,
-                          position: 'relative'
-                        }}>
-                          {m.text}
-                          
-                          {/* Reaction button */}
-                          <button
-                            onClick={() => setShowReactions(showReactions === m.id ? null : m.id)}
-                            style={{
-                              border: 'none',
-                              background: 'none',
-                              cursor: 'pointer',
-                              padding: '4px 8px',
-                              fontSize: 16,
-                              opacity: 0.6
-                            }}
-                          >
-                            😊
-                          </button>
-
-                          {/* Reaction picker */}
-                          {showReactions === m.id && (
-                            <div style={{
-                              position: 'absolute',
-                              bottom: '100%',
-                              left: 0,
-                              background: 'white',
-                              border: '1px solid #ddd',
-                              borderRadius: 8,
-                              padding: '4px',
-                              display: 'flex',
-                              gap: 4,
-                              boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
-                              zIndex: 1
-                            }}>
-                              {['👍', '❤️', '😂', '😮', '😢', '😡'].map(emoji => (
-                                <button
-                                  key={emoji}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    socket.emit('reaction', {
-                                      messageId: m.id,
-                                      reaction: emoji,
-                                      room: currentRoom
-                                    });
-                                    setShowReactions(null);
-                                  }}
-                                  style={{
-                                    border: 'none',
-                                    background: 'none',
-                                    cursor: 'pointer',
-                                    padding: '4px',
-                                    fontSize: 16
-                                  }}
-                                >
-                                  {emoji}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Show reactions */}
-                          {m.reactions && Object.entries(m.reactions).length > 0 && (
-                            <div style={{
-                              display: 'flex',
-                              gap: 4,
-                              marginTop: 4,
-                              flexWrap: 'wrap'
-                            }}>
-                              {Object.entries(m.reactions).map(([reaction, users]) => (
-                                <div
-                                  key={reaction}
-                                  title={users.join(', ')}
-                                  style={{
-                                    background: '#fff',
-                                    border: '1px solid #ddd',
-                                    borderRadius: 12,
-                                    padding: '2px 6px',
-                                    fontSize: 12
-                                  }}
-                                >
-                                  {reaction} {users.length}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      {m.timestamp && (
-                        <div style={{ 
-                          fontSize: 11, 
-                          color: '#999',
-                          textAlign: m.username === username ? 'right' : 'left'
-                        }}>
-                          {new Date(m.timestamp).toLocaleTimeString()}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </>
+      {/* ==================== CHAT AREA ==================== */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        {/* Messages Container */}
+        <div
+          className="messages"
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "1rem",
+            display: "flex",
+            flexDirection: "column-reverse",
+            backgroundColor: "#fff",
+          }}
+        >
+          {displayedMessages.map((msg, i) => {
+            const isOldest = i === 0;
+            return (
+              <div
+                key={msg.id}
+                ref={isOldest ? lastMessageRef : null}
+                className={`message ${msg.username === username ? "own" : ""}`}
+                style={{
+                  marginBottom: "8px",
+                  alignSelf: msg.username === username ? "flex-end" : "flex-start",
+                  background: msg.username === username ? "#007bff" : "#e9ecef",
+                  color: msg.username === username ? "white" : "inherit",
+                  padding: "6px 12px",
+                  borderRadius: "12px",
+                  maxWidth: "70%",
+                  wordBreak: "break-word",
+                }}
+              >
+                {msg.system ? (
+                  <em style={{ fontSize: "0.85rem", opacity: 0.7 }}>{msg.text}</em>
+                ) : (
+                  <>
+                    <strong>{msg.username}: </strong>
+                    {msg.text}
+                  </>
+                )}
+              </div>
+            );
+          })}
+          {loading && <div style={{ textAlign: "center", padding: "0.5rem" }}>Loading…</div>}
+          {!hasMore && messages.length > 0 && (
+            <div style={{ textAlign: "center", fontSize: "0.85rem", color: "#888" }}>
+              No more messages
+            </div>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
-        {/* typing indicator */}
-        {typingUsers.length > 0 && (
-          <div className="typing-indicator" style={{ textAlign: 'left', marginTop: 8, color: '#666', fontStyle: 'italic' }}>
-            {typingUsers.filter((u) => u !== username).length > 0 ? `${typingUsers.filter((u) => u !== username).join(', ')} is typing...` : ''}
-          </div>
-        )}
-
-        <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        {/* Input Area */}
+        <form
+          className="input-area"
+          onSubmit={sendMessage}
+          style={{
+            display: "flex",
+            padding: "0.5rem",
+            borderTop: "1px solid #ddd",
+            backgroundColor: "#f8f9fa",
+          }}
+        >
           <input
-            type="text"
-            value={messageInput}
-            onChange={(e) => {
-              const val = e.target.value;
-              setMessageInput(val);
-              // emit typing true
-              socket.emit('typing', { username, typing: true });
-              // clear existing timeout
-              if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-              // set timeout to emit stopped typing after 1s of inactivity
-              typingTimeoutRef.current = setTimeout(() => {
-                socket.emit('typing', { username, typing: false });
-                typingTimeoutRef.current = null;
-              }, 1000);
+            placeholder="Type a message..."
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              marginRight: "8px",
+              border: "1px solid #ccc",
+              borderRadius: "4px",
             }}
-            placeholder={selectedUser ? `Message ${selectedUser}...` : "Type a message..."}
-            style={{ flex: 1, padding: '8px 10px', fontSize: 14 }}
           />
-          <button type="submit" style={{ 
-            padding: '8px 12px',
-            background: selectedUser ? '#28a745' : '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: 4,
-            cursor: 'pointer'
-          }}>
-            {selectedUser ? 'Send DM' : 'Send'}
+          <button
+            type="submit"
+            style={{
+              padding: "8px 16px",
+              background: "#007bff",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Send
           </button>
         </form>
       </div>
